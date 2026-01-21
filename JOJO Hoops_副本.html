@@ -1,0 +1,313 @@
+<!DOCTYPE html> 
+<html lang="zh-CN"> 
+<head> 
+    <meta charset="UTF-8"> 
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <title>JOJO HOOPS: Platinum Star</title> 
+    <!-- 引入 Mediapipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script> 
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script> 
+    <style> 
+        body, html { margin: 0; padding: 0; overflow: hidden; background: #fff300; font-family: 'Arial Black', sans-serif; } 
+        canvas { display: block; } 
+        
+        /* 启动界面样式 */
+        #start-overlay { 
+            position: fixed; inset: 0; 
+            background: radial-gradient(circle, #D8BFD8 0%, #4B0082 100%); 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; 
+            z-index: 200; 
+            text-align: center;
+        } 
+        .menace-title { 
+            font-size: clamp(60px, 12vw, 120px); 
+            color: #fff; text-shadow: 8px 8px #000; 
+            font-style: italic; transform: rotate(-5deg); 
+            margin-bottom: 20px; 
+            user-select: none;
+            font-family: 'Impact', sans-serif;
+        } 
+        #ready-btn { 
+            padding: 20px 60px; font-size: 32px; font-weight: 900; 
+            background: #fff; color: #000; border: 8px solid #000; 
+            box-shadow: 12px 12px 0px #FFD700; 
+            cursor: pointer; 
+            display: none; 
+            transition: transform 0.1s;
+        } 
+        #ready-btn:active { transform: translate(4px, 4px); box-shadow: 8px 8px 0px #FFD700; }
+        
+        #ui { 
+            position: absolute; top: 25px; left: 25px; color: #000; 
+            font-size: 28px; z-index: 10; font-weight: 900; 
+            background: rgba(255,255,255,0.9); padding: 15px; border: 6px solid #000; 
+            box-shadow: 6px 6px 0px #800080; 
+            pointer-events: none;
+        } 
+        #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 150; transition: opacity 0.1s; }
+        
+        /* 底部右侧提示文字 */
+        #controls-hint {
+            position: absolute; 
+            bottom: 10px;       
+            right: 15px;        
+            width: auto;        
+            text-align: right;  
+            font-size: 14px;    
+            color: #fff; 
+            font-weight: bold; 
+            pointer-events: none;
+            text-shadow: 2px 2px #000;
+            opacity: 0.8;
+            font-family: sans-serif;
+        }
+    </style> 
+</head> 
+<body> 
+ 
+ <div id="start-overlay"> 
+     <div class="menace-title">JOJO HOOPS</div> 
+     <button id="ready-btn">ARE YOU READY?</button> 
+     <div id="load-msg" style="display:none;"></div> 
+ </div> 
+ 
+ <div id="ui"> 
+     SCORE: <span id="score">0</span><br> 
+     COMBO: <span id="combo">0</span> 
+ </div> 
+ 
+ <div id="flash"></div> 
+ <video id="video" style="display:none" playsinline></video> 
+ <canvas id="gameCanvas"></canvas> 
+ 
+ <div id="controls-hint">Controls: Mouse / Webcam (Open Hand: Charge, Fist: Shoot)</div>
+ 
+ <audio id="nice-audio" src="https://www.myinstants.com/media/sounds/star-platinum-ora.mp3"></audio>
+ 
+ <script> 
+ const canvas = document.getElementById('gameCanvas'); 
+ const ctx = canvas.getContext('2d'); 
+ const overlay = document.getElementById('start-overlay'); 
+ const readyBtn = document.getElementById('ready-btn'); 
+ const flashEl = document.getElementById('flash'); 
+ const niceAudio = document.getElementById('nice-audio');
+ 
+ const jojoImg = new Image();
+ jojoImg.src = 'jojo.png'; 
+ jojoImg.onerror = () => {
+     console.log("Local jojo.png not found, using updated fallback...");
+     // 已替换为你提供的图片的【直接链接】，确保能正确显示
+     jojoImg.src = 'https://i.postimg.cc/bymLDSg6/jojo.png'; 
+     // 允许跨域加载图片（防止画布被污染）
+     jojoImg.crossOrigin = "Anonymous";
+ };
+
+ let width, height, score = 0, combo = 0; 
+ let isCharging = false, chargePower = 0, aimX = 0; 
+ let gameState = 'init'; 
+ let ball = { x: 0, y: 0, r: 85, vx: 0, vy: 0, scale: 1.4 }; 
+ let hoop = { x: 0, y: 0, w: 260 }; 
+ let mangaTexts = []; 
+ let jojoAnim = { active: false, startTime: 0, duration: 3000 };
+
+ function drawBall() { 
+     ctx.save(); 
+     ctx.translate(ball.x, ball.y); 
+     ctx.scale(ball.scale, ball.scale); 
+
+     if (isCharging && gameState === 'playing') { 
+         ctx.strokeStyle = '#8A2BE2'; ctx.lineWidth = 10 + chargePower * 15; 
+         ctx.beginPath(); ctx.arc(0, 0, ball.r + 15, 0, Math.PI * 2); ctx.stroke(); 
+         ctx.strokeStyle = '#00FFFF'; ctx.lineWidth = 5; 
+         ctx.beginPath(); ctx.arc(0, 0, ball.r + 25, Math.random()*Math.PI, Math.random()*Math.PI + Math.PI); ctx.stroke();
+         
+         const shake = (Math.random() - 0.5) * chargePower * 10;
+         ctx.translate(shake, shake);
+     } 
+
+     ctx.beginPath(); ctx.arc(0, 0, ball.r, 0, Math.PI * 2); 
+     ctx.fillStyle = '#ff8800'; ctx.fill(); 
+     ctx.strokeStyle = '#000'; ctx.lineWidth = 12; ctx.stroke(); 
+
+     ctx.lineWidth = 8; ctx.lineCap = 'round';
+     ctx.beginPath();
+     ctx.moveTo(-ball.r, 0); ctx.quadraticCurveTo(0, 60, ball.r, 0);
+     ctx.moveTo(0, -ball.r); ctx.quadraticCurveTo(60, 0, 0, ball.r);
+     ctx.stroke();
+     ctx.restore(); 
+ } 
+
+ function drawJojoCelebration() {
+     if (!jojoAnim.active) return;
+     const elapsed = Date.now() - jojoAnim.startTime;
+     let progress = 1;
+     
+     if (elapsed < 300) progress = elapsed / 300;
+     else if (elapsed > 2000) progress = Math.max(0, (3000 - elapsed) / 1000);
+     
+     if (elapsed > 3000) { jojoAnim.active = false; return; }
+
+     // 适配新图片尺寸
+     const imgW = 600; 
+     const ratio = jojoImg.naturalWidth ? (jojoImg.naturalHeight / jojoImg.naturalWidth) : 1.0;
+     const imgH = imgW * ratio;
+     
+     // 动画：从左侧滑入
+     const slideX = (1 - progress) * -300; 
+     const opacity = Math.min(1, progress * 2);
+
+     ctx.save();
+     ctx.globalAlpha = opacity;
+     ctx.shadowColor = '#8A2BE2'; ctx.shadowOffsetX = 20; ctx.shadowOffsetY = 20;
+     
+     if (jojoImg.complete && jojoImg.naturalHeight !== 0) {
+        // 位置调整：放在左下角
+        ctx.drawImage(jojoImg, -50 + slideX, height - imgH + 20, imgW, imgH);
+     }
+     ctx.restore();
+
+     if (progress > 0.4) {
+         ctx.save();
+         const bounce = Math.sin(Date.now() * 0.05) * 10;
+         ctx.translate(width/2 + 100, height/2 + bounce);
+         ctx.rotate(-5 * Math.PI / 180);
+         ctx.textAlign = 'center';
+         ctx.font = 'bold italic 160px sans-serif'; 
+         
+         ctx.fillStyle = '#FFD700'; 
+         ctx.fillText('ORA!', 15, 15);
+         
+         ctx.strokeStyle = '#000'; ctx.lineWidth = 25; ctx.strokeText('ORA!', 0, 0);
+         ctx.fillStyle = '#fff'; ctx.fillText('ORA!', 0, 0);
+         
+         ctx.font = 'bold 40px sans-serif';
+         ctx.fillStyle = '#000';
+         ctx.fillText('YES! YES! YES!', 0, 120);
+         ctx.restore();
+     }
+ }
+
+ function resetBall() { 
+     ball.y = height - 130; ball.vx = 0; ball.vy = 0; ball.scale = 1.4; 
+     gameState = 'playing'; 
+ } 
+
+ function shoot() { 
+     if (gameState !== 'playing') return; 
+     gameState = 'shooting'; 
+     ball.vx = aimX * 28; 
+     ball.vy = -(18 + chargePower * 35); 
+     chargePower = 0; 
+     
+     flashEl.style.opacity = 0.6; 
+     setTimeout(() => flashEl.style.opacity = 0, 100);
+     spawnMangaText("ORA!", ball.x, ball.y - 100, 160, "#8A2BE2"); 
+ } 
+
+ function update() { 
+     if (gameState === 'shooting' || gameState === 'scored') { 
+         ball.x += ball.vx; 
+         ball.y += ball.vy; 
+         ball.vy += 1.3; 
+         ball.scale = Math.max(0.35, ball.scale - 0.02); 
+
+         if (gameState === 'shooting' && ball.vy > 0 && Math.abs(ball.y - hoop.y) < 70) { 
+             if (Math.abs(ball.x - hoop.x) < hoop.w/2) { 
+                 score += 10 + Math.floor(combo * 2); 
+                 combo++; 
+                 document.getElementById('score').innerText = score; 
+                 document.getElementById('combo').innerText = combo; 
+                 spawnMangaText("DOOON!", hoop.x, hoop.y, 180, "#fff"); 
+                 
+                 jojoAnim.active = true; jojoAnim.startTime = Date.now();
+                 niceAudio.currentTime = 0; niceAudio.play().catch(()=>{});
+                 gameState = 'scored'; 
+                 ball.vx *= 0.3; 
+             } 
+         } 
+         if (ball.y > height + 300) { 
+             if (gameState !== 'scored') { combo = 0; document.getElementById('combo').innerText = combo; }
+             resetBall(); 
+         } 
+     } 
+
+     if (gameState === 'playing') { 
+         ball.x = (width / 2) + (aimX * (width / 2.5)); 
+         if (isCharging) { 
+             chargePower = Math.min(chargePower + 0.04, 1); 
+             if (Math.random() > 0.85) spawnMangaText("ゴ", ball.x + (Math.random()-0.5)*300, ball.y - 150, 60, "#000"); 
+         } 
+     } 
+
+     for (let i = mangaTexts.length - 1; i >= 0; i--) { 
+         const t = mangaTexts[i]; t.x += t.vx; t.y += t.vy; t.life -= 0.03; 
+         if (t.life <= 0) mangaTexts.splice(i, 1); 
+     } 
+ } 
+
+ function spawnMangaText(text, x, y, size, color) { 
+     mangaTexts.push({ text, x, y, size, color, life: 1, vx: (Math.random()-0.5)*15, vy: -5, rotate: (Math.random()-0.5)*0.5 }); 
+ } 
+
+ function render() { 
+     ctx.clearRect(0,0,width,height); 
+     
+     const grad = ctx.createRadialGradient(width/2, height/2, 0, width/2, height/2, width); 
+     grad.addColorStop(0, '#FFFACD'); 
+     grad.addColorStop(1, '#FF8C00'); 
+     ctx.fillStyle = grad; ctx.fillRect(0,0,width,height); 
+
+     ctx.save(); ctx.translate(hoop.x, hoop.y); 
+     ctx.fillStyle = '#fff'; ctx.fillRect(-160, -180, 320, 220); 
+     ctx.strokeStyle = '#000'; ctx.lineWidth = 12; ctx.strokeRect(-160, -180, 320, 220); 
+     ctx.beginPath(); ctx.ellipse(0, 20, hoop.w/2, 35, 0, 0, Math.PI*2); 
+     ctx.fillStyle = '#ff0044'; ctx.fill(); ctx.stroke(); 
+     ctx.beginPath();
+     ctx.moveTo(-hoop.w/2 + 20, 20); ctx.lineTo(-100, 150); ctx.lineTo(100, 150); ctx.lineTo(hoop.w/2 - 20, 20);
+     ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.stroke();
+     ctx.restore(); 
+
+     drawBall(); 
+     
+     mangaTexts.forEach(t => { 
+         ctx.save(); ctx.translate(t.x, t.y); ctx.rotate(t.rotate); ctx.globalAlpha = t.life; 
+         ctx.font = `bold ${t.size}px sans-serif`; ctx.strokeStyle = '#000'; ctx.lineWidth = 12; 
+         ctx.strokeText(t.text, 0, 0); ctx.fillStyle = t.color; ctx.fillText(t.text, 0, 0); ctx.restore(); 
+     }); 
+
+     drawJojoCelebration(); 
+     update(); 
+     requestAnimationFrame(render); 
+ } 
+
+ const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` }); 
+ hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5 }); 
+ hands.onResults(results => { 
+     readyBtn.style.display = 'block'; 
+     const loadMsg = document.getElementById('load-msg');
+     if(loadMsg) loadMsg.style.display = 'none'; 
+     
+     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) { 
+         const lm = results.multiHandLandmarks[0]; 
+         const isFist = lm[12].y > lm[9].y; 
+         aimX = (lm[9].x - 0.5) * 2.5; 
+         if (!isFist && gameState === 'playing') isCharging = true; 
+         else if (isFist && isCharging) { isCharging = false; shoot(); } 
+     } 
+ }); 
+
+ const camera = new Camera(document.getElementById('video'), { 
+     onFrame: async () => { await hands.send({image: document.getElementById('video')}); }, 
+     width: 640, height: 480 
+ });
+ camera.start().catch(e => { alert("Camera failed: Use HTTPS or Localhost."); });
+
+ readyBtn.onclick = () => { overlay.style.display = 'none'; resetBall(); niceAudio.load(); }; 
+ window.onresize = () => { width = canvas.width = window.innerWidth; height = canvas.height = window.innerHeight; hoop.x = width/2; hoop.y = height * 0.22; }; 
+ window.onmousedown = () => { if(gameState==='playing') isCharging=true; }; 
+ window.onmouseup = () => { if(isCharging){ isCharging=false; shoot(); } }; 
+ window.onmousemove = (e) => { aimX = (e.clientX/width - 0.5) * 2.5; }; 
+ window.onresize(); render(); 
+ </script> 
+</body> 
+</html>
